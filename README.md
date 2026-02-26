@@ -223,3 +223,4 @@ MIT License — см. [LICENSE](LICENSE)
 ---
 
 **Made with ❤️ by MeetingMind Team**
+# meetingmind
