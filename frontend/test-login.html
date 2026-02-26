@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MeetingMind Login Test</title>
+    <style>
+        body { font-family: Arial; padding: 20px; }
+        input { display: block; margin: 10px 0; padding: 8px; width: 300px; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
+        #result { margin-top: 20px; padding: 10px; border: 1px solid #ccc; }
+        .success { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>MeetingMind Login Test</h1>
+    <input type="email" id="email" value="test@test.com" placeholder="Email">
+    <input type="password" id="password" value="test123456" placeholder="Password">
+    <button onclick="login()">Login</button>
+    <div id="result"></div>
+
+    <script>
+        async function login() {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const result = document.getElementById('result');
+            
+            result.innerHTML = 'Logging in...';
+            
+            try {
+                const formData = new FormData();
+                formData.append('username', email);
+                formData.append('password', password);
+                
+                const response = await fetch('http://localhost:8000/api/v1/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams(formData).toString()
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    result.innerHTML = '<p class="success">✅ Login successful!</p>' +
+                        '<p>Access Token: ' + data.access_token.substring(0, 50) + '...</p>' +
+                        '<p>Refresh Token: ' + data.refresh_token.substring(0, 50) + '...</p>';
+                    localStorage.setItem('access_token', data.access_token);
+                    localStorage.setItem('refresh_token', data.refresh_token);
+                } else {
+                    const error = await response.text();
+                    result.innerHTML = '<p class="error">❌ Login failed: ' + error + '</p>';
+                }
+            } catch (err) {
+                result.innerHTML = '<p class="error">❌ Error: ' + err.message + '</p>';
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,178 @@
+version: '3.8'
+
+services:
+  # ===========================================
+  # PostgreSQL Database
+  # ===========================================
+  db:
+    image: postgres:16-alpine
+    container_name: meetingmind-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-meetingmind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meetingmind_password}
+      POSTGRES_DB: ${POSTGRES_DB:-meetingmind}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meetingmind}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - meetingmind-network
+
+  # ===========================================
+  # Redis Cache & Message Broker
+  # ===========================================
+  redis:
+    image: redis:7-alpine
+    container_name: meetingmind-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - meetingmind-network
+
+  # ===========================================
+  # MinIO (S3-compatible Storage)
+  # ===========================================
+  minio:
+    image: minio/minio:latest
+    container_name: meetingmind-minio
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - meetingmind-network
+
+  # ===========================================
+  # Backend API (FastAPI)
+  # ===========================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: meetingmind-backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://meetingmind:meetingmind_password@db:5432/meetingmind}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SECRET_KEY: ${SECRET_KEY:-your-super-secret-key}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-your-jwt-secret-key}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:9000}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+    volumes:
+      - ./backend:/app
+      - ./ai-engine:/ai-engine
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - meetingmind-network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ===========================================
+  # Celery Worker (AI Tasks)
+  # ===========================================
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: meetingmind-worker
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://meetingmind:meetingmind_password@db:5432/meetingmind}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:9000}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+    volumes:
+      - ./backend:/app
+      - ./ai-engine:/ai-engine
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - meetingmind-network
+    command: celery -A app.celery worker --loglevel=info
+
+  # ===========================================
+  # Frontend (React)
+  # ===========================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: meetingmind-frontend
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_WS_URL: ws://localhost:8000/ws
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - meetingmind-network
+    command: npm run dev -- --host 0.0.0.0 --port 3000
+
+  # ===========================================
+  # Create S3 Bucket (Init)
+  # ===========================================
+  createbuckets:
+    image: minio/mc:latest
+    container_name: meetingmind-createbuckets
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 ${S3_ACCESS_KEY:-minioadmin} ${S3_SECRET_KEY:-minioadmin};
+      mc mb myminio/${S3_BUCKET:-meetingmind-recordings} || true;
+      mc policy set download myminio/${S3_BUCKET:-meetingmind-recordings};
+      exit 0;
+      "
+    networks:
+      - meetingmind-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+
+networks:
+  meetingmind-network:
+    driver: bridge
